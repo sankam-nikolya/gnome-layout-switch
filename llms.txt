@@ -1,0 +1,93 @@
+# gnome-layout-switch
+
+Lightweight daemon that switches GNOME keyboard layout on Ctrl+Shift. Works on X11 and Wayland (GNOME 3-48+).
+
+## Project Type
+
+Go CLI application (single binary, static build)
+
+## Repository
+
+https://github.com/sankam-nikolya/gnome-layout-switch
+
+## Key Files
+
+- `gnome-layout-switch.go` — Main source code (single file, ~690 lines)
+- `build.sh` — Docker-based build script
+- `Dockerfile` — Multi-stage build (golang:1.27-alpine)
+- `Makefile` — Build, lint, format, CI targets
+- `.golangci.yml` — 68 linters enabled
+- `README.md` — User documentation
+- `CONTRIBUTING.md` — Contributor guide
+- `CHANGELOG.md` — Version history (Keep a Changelog format)
+- `LICENSE` — MIT License
+- `config.example.json` — Example configuration
+
+## Architecture
+
+- **Single Go file** with no external dependencies (standard library only)
+- **Two runtime modes**: X11 (xinput) and Wayland (/dev/input/eventX)
+- **Three layout-switching backends** (tried in order):
+  2. EvalGjs extension
+  3. Classic GNOME Shell Eval (GNOME ≤40)
+- **Config file**: ~/.config/gnome-layout-switch/config.json
+- **Systemd user service** for auto-start on graphical login
+
+## Key Types
+
+- `Config` — JSON config: Key1, Key2 (comma-separated keycodes), Input (device path), Debug, Device (name filter)
+- `EventData` — Parsed xinput event (Type, Detail)
+- `InputEvent` — Raw Linux input event (Sec, Usec, Type, Code, Value)
+
+## Key Functions
+
+- `main()` — Entry point, flag parsing, config loading, mode selection
+- `switchLayout()` — Tries backends in order to switch layout
+- `directEvent()` — Wayland: reads from /dev/input/eventX
+- `xinputMode()` — X11: uses xinput test-xi2
+- `findKeyboardEvent()` — Auto-detects keyboard device from /proc/bus/input/devices
+- `installService()` — Generates systemd user service unit
+
+## Build & Install
+
+```bash
+# Docker build (no Go needed)
+bash build.sh           # produces ./gnome-layout-switch
+bash build.sh --install # build + install to ~/.local/bin
+
+# Local build (requires Go)
+CGO_ENABLED=0 go build -ldflags="-s -w" -o gnome-layout-switch gnome-layout-switch.go
+
+# Install systemd service
+./gnome-layout-switch -install-service
+systemctl --user enable --now gnome-layout-switch.service
+```
+
+## Usage
+
+```bash
+# X11
+./gnome-layout-switch
+
+# Wayland (auto-detect)
+./gnome-layout-switch -auto-input
+
+# Wayland (explicit device)
+./gnome-layout-switch -input /dev/input/event3
+```
+
+## Development
+
+```bash
+make fmt       # Format with gofumpt
+make lint      # Run all 68 linters
+make lint-fix  # Auto-fix issues
+make ci        # Lint + build (CI pipeline)
+```
+
+## Requirements
+
+- Linux with GNOME
+- gdbus (for Wayland backends)
+- xinput (for X11 mode)
+- On Wayland: user in 'input' group (`sudo usermod -aG input $USER`)
