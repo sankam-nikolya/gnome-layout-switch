@@ -295,3 +295,34 @@ func TestInputEventDecoding64Bit(t *testing.T) {
 		t.Fatalf("decoded unexpected event: %+v", event)
 	}
 }
+
+func TestXInputXI2MultilineEventParsing(t *testing.T) {
+	// This is the standard format printed by xinput test-xi2 --root.
+	input := "EVENT type 13 (RawKeyPress)\n    device: 3 (6)\n    detail: 37\n    flags:\n" +
+		"EVENT type 14 (RawKeyRelease)\n    device: 3 (6)\n    detail: 37\n"
+	got := parseXInputEventsForTest(input)
+	want := []EventData{{Type: "RawKeyPress", Detail: 37}, {Type: "RawKeyRelease", Detail: 37}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d events, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestXInputCompactEventParsing(t *testing.T) {
+	input := "EVENT RawKeyPress detail: 37 (KEY_LEFTCTRL) valuators: 0\n" +
+		"EVENT RawKeyRelease detail: 37 (KEY_LEFTCTRL) valuators: 0\n"
+	got := parseXInputEventsForTest(input)
+	if len(got) != 2 || got[0] != (EventData{Type: "RawKeyPress", Detail: 37}) || got[1] != (EventData{Type: "RawKeyRelease", Detail: 37}) {
+		t.Fatalf("unexpected parsed events: %#v", got)
+	}
+}
+
+func parseXInputEventsForTest(input string) []EventData {
+	var got []EventData
+	parseXInputEvents(strings.NewReader(input), func(event *EventData) { got = append(got, *event) })
+	return got
+}

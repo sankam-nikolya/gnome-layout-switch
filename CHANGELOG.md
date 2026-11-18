@@ -1,3 +1,17 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## 1.4.1
+- Fixed XInput2 event parsing for the standard multi-line output of `xinput test-xi2 --root`; Ctrl+Shift key events are now recognized on Ubuntu 22.04 / GNOME 42 / X11.
+- Install and enable the matching GNOME Shell extension before starting the daemon, avoiding the extension-registration race.
+- Import DISPLAY/XAUTHORITY into the systemd user manager so the X11 daemon can access the active display.
+- Restart an existing user service during upgrades so the new binary is actually loaded.
+- Added parser tests for standard XI2 and compact event formats.
+
 ## 1.3.0 — Own GNOME Shell Extension (Ubuntu 26 / Wayland)
 
 - Primary layout backend is now a **bundled GNOME Shell extension** that exports
@@ -21,13 +35,6 @@
 - Removed `PassEnvironment` from the generated systemd user unit.
 - Docker build now runs Go unit tests before producing the static binary.
 - Updated Ubuntu 26.04 GNOME Wayland setup documentation and input-group warning.
-
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 

@@ -26,6 +26,6 @@ RUN if [ "$RUN_TESTS" = "1" ]; then \
 
 # Static binary, stripped
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w -X main.appVersion=1.3.0" \
+    go build -trimpath -ldflags="-s -w -X main.appVersion=1.4.1" \
     -o /gnome-layout-switch \
     gnome-layout-switch.go

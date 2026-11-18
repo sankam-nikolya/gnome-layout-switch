@@ -37,7 +37,7 @@ import (
 
 const (
 	appName    = "gnome-layout-switch"
-	appVersion = "1.3.0"
+	appVersion = "1.4.1"
 
 	// Own extension D-Bus names.
 	extDest       = "org.gnome.Shell"
@@ -234,7 +234,7 @@ func checkExtension() (ok bool, detail string) {
 	// 2. Can we call GetCurrent() on the session bus?
 	out, err = runGdbus(extGetCmdTmpl)
 	if err != nil {
-		return false, fmt.Sprintf("extension enabled but D-Bus call failed: %v\nOutput: %s\nLog out/in after enabling (required on Wayland).", err, strings.TrimSpace(string(out)))
+		return false, fmt.Sprintf("extension enabled but D-Bus call failed: %v\nOutput: %s\nCheck `gnome-extensions info %s`; on Wayland, log out and back in after enabling.", err, strings.TrimSpace(string(out)), extUUID)
 	}
 
 	return true, fmt.Sprintf("extension OK (GetCurrent → %s)", strings.TrimSpace(string(out)))
@@ -438,39 +438,51 @@ func processDirectEvent(event InputEvent) {
 	}
 }
 
+// parseXInputEvents parses both standard multi-line XI2 events and the
+// compact one-line form used by some xinput versions/wrappers.
+func parseXInputEvents(r io.Reader, handle func(*EventData)) {
+	reCompact := regexp.MustCompile(`^EVENT\s+(RawKeyPress|RawKeyRelease)\s+detail:\s*(\d+)`)
+	reHeader := regexp.MustCompile(`^EVENT\s+type\s+\d+\s+\((RawKeyPress|RawKeyRelease)\)`)
+	reDetail := regexp.MustCompile(`^detail:\s*(\d+)`)
+	scanner := bufio.NewScanner(r)
+	currentType := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if m := reCompact.FindStringSubmatch(line); m != nil {
+			if n, err := strconv.ParseUint(m[2], 10, 16); err == nil {
+				handle(&EventData{Type: m[1], Detail: uint16(n)})
+			}
+			currentType = ""
+			continue
+		}
+		if m := reHeader.FindStringSubmatch(line); m != nil {
+			currentType = m[1]
+			continue
+		}
+		if currentType != "" {
+			if m := reDetail.FindStringSubmatch(line); m != nil {
+				if n, err := strconv.ParseUint(m[1], 10, 16); err == nil {
+					handle(&EventData{Type: currentType, Detail: uint16(n)})
+				}
+				currentType = ""
+			}
+		}
+	}
+}
+
 // xinputMode runs the X11 event loop using xinput test-xi2 --root.
 // Parses xinput output in a goroutine, delegates events to processEvent.
 // Sets up signal handling for clean shutdown.
 //
-// xinput test-xi2 outputs one line per event:
-//
-//	EVENT RawKeyPress detail: 37 (KEY_LEFTCTRL) valuators: 0
-//	EVENT RawKeyRelease detail: 37 (KEY_LEFTCTRL) valuators: 0
+// xinput test-xi2 emits multi-line XI2 events; parseXInputEvents also
+// accepts the compact one-line format emitted by some versions/wrappers.
 func xinputMode() {
 	cmd := exec.Command("xinput", "test-xi2", "--root")
 	reader, writer := io.Pipe()
 	cmd.Stdout = writer
 
-	// Regex to extract type and keycode from a single EVENT line
-	reEvent := regexp.MustCompile(`^EVENT\s+(\w+)\s+detail:\s+(\d+)`)
-
 	go func() {
-		scanner := bufio.NewScanner(reader)
-		event := EventData{}
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if m := reEvent.FindStringSubmatch(line); m != nil {
-				event.Type = m[1] // RawKeyPress / RawKeyRelease
-
-				event.Detail = 0
-				if n, err := strconv.ParseUint(m[2], 10, 16); err == nil {
-					event.Detail = uint16(n)
-				}
-
-				processEvent(&event)
-			}
-		}
+		parseXInputEvents(reader, processEvent)
 	}()
 
 	// Handle signals
@@ -493,7 +505,7 @@ func xinputMode() {
 	_ = reader.Close()
 
 	if err != nil {
-		log.Fatalf("Unable to run xinput: %v", err)
+		log.Fatalf("Unable to run xinput: %v (check that xinput is installed and DISPLAY/XAUTHORITY are available)", err)
 	}
 }
 
@@ -637,6 +649,11 @@ func selectKeyboardDevices(devices []inputDevice, nameFilter string) []string {
 // Uses the current binary path and configuration to build ExecStart.
 // Writes to ~/.config/systemd/user/gnome-layout-switch.service.
 // Prints instructions for enabling and starting the service.
+//
+// On Wayland (or when an explicit --input is set) the unit includes
+// --auto-input / --input so the daemon reads /dev/input/event*.
+// On X11 the unit starts the binary with no input flags so it uses
+// xinput test-xi2 and does not require membership in the input group.
 func installService() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -655,9 +672,13 @@ func installService() {
 	unitPath := filepath.Join(unitDir, appName+".service")
 
 	args := []string{exe}
+	wayland := isWayland()
+
 	if cfg.Input != "" {
 		args = append(args, "--input", cfg.Input)
-	} else {
+	} else if wayland {
+		// Wayland needs /dev/input; X11 must not force --auto-input
+		// (that path requires the input group and fails with permission denied).
 		args = append(args, "--auto-input")
 	}
 
@@ -698,16 +719,20 @@ WantedBy=graphical-session.target
 	}
 
 	fmt.Printf("Service unit written to:\n  %s\n\n", unitPath)
+	fmt.Printf("Session detected: %s\n", map[bool]string{true: "Wayland", false: "X11"}[wayland])
+	fmt.Printf("ExecStart: %s\n\n", strings.Join(args, " "))
 	fmt.Println("Enable and start it with:")
 	fmt.Println("  systemctl --user daemon-reload")
 	fmt.Println("  systemctl --user enable --now " + appName + ".service")
 	fmt.Println()
 	fmt.Println("Check status:")
 	fmt.Println("  systemctl --user status " + appName + ".service")
-	fmt.Println()
-	fmt.Println("Important on Wayland:")
-	fmt.Println("  sudo usermod -aG input $USER")
-	fmt.Println("  (then log out and back in)")
+	if wayland {
+		fmt.Println()
+		fmt.Println("Important on Wayland:")
+		fmt.Println("  sudo usermod -aG input $USER")
+		fmt.Println("  (then log out and back in)")
+	}
 }
 
 func printVersion() {

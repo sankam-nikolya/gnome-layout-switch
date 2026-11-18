@@ -1,0 +1,12 @@
+{
+  "name": "GNOME Layout Switch",
+  "description": "D-Bus interface for reliable keyboard layout switching (Next / Previous / GetCurrent). Used by gnome-layout-switch daemon. Works on GNOME Wayland and X11. Legacy build for GNOME 42–44.",
+  "uuid": "gnome-layout-switch@gnome-layout-switch",
+  "shell-version": [
+    "42",
+    "43",
+    "44"
+  ],
+  "url": "https://github.com/sankam-nikolya/gnome-layout-switch",
+  "version": 2
+}

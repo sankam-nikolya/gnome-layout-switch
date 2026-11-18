@@ -99,8 +99,10 @@ WHAT IT DOES (install):
   - Copies binary (builds via build.sh if missing).
   - Installs and starts the daemon service.
   - On Wayland: adds user to the 'input' group.
-  - On GNOME: disables system language-switch shortcut
-    (switch-input-source / switch-input-source-backward) and backs up
+  - On X11: uses xinput test-xi2 (requires xinput and the graphical DISPLAY/XAUTHORITY environment).
+  - On GNOME: installs the matching Shell extension (legacy for 42–44,
+    modern ESM for 45+) and disables system language-switch shortcut
+    (switch-input-source / switch-input-source-backward), backing up
     previous values to ~/.config/${APP}/shortcuts.backup.
   - Verifies and reports PASS/WARN/FAIL per check.
 EOF
@@ -240,30 +242,87 @@ install_binary() {
 
 # --- systemd user service ----------------------------------------------------
 
+# Build ExecStart for the user service according to the current session.
+# X11: plain binary (xinput test-xi2, no input group).
+# Wayland: --auto-input (/dev/input/event*, needs input group).
+user_service_exec() {
+  local exe="${1:-$BIN}"
+  if [[ "$SESSION" == "wayland" ]]; then
+    echo "$exe --auto-input"
+  else
+    # X11 or unknown: do not force --auto-input (avoids permission denied)
+    echo "$exe"
+  fi
+}
+
+write_user_unit() {
+  local exe_line unit_path
+  exe_line="$(user_service_exec "$BIN")"
+  unit_path="$UNIT_DIR/$SERVICE"
+  mkdir -p "$UNIT_DIR"
+  cat > "$unit_path" <<EOF
+[Unit]
+Description=GNOME Keyboard Layout Switcher (Ctrl+Shift)
+Documentation=https://github.com/sankam-nikolya/gnome-layout-switch
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$exe_line
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+  info "Service unit written to $unit_path"
+  if [[ "$SESSION" == "wayland" ]]; then
+    info "ExecStart uses --auto-input (Wayland /dev/input path)"
+  else
+    info "ExecStart without --auto-input (X11 uses xinput; session=$SESSION)"
+  fi
+}
+
 install_service() {
   step "Installing systemd user service"
   if ! command -v systemctl >/dev/null 2>&1; then
     warn "systemctl not found. Cannot install service. Run daemon manually:"
-    warn "  $BIN $([ "$SESSION" = wayland ] && echo --auto-input)"
+    warn "  $(user_service_exec "$BIN")"
     return 1
   fi
   if ! systemctl --user show-environment >/dev/null 2>&1; then
-    warn "systemd user session (DBus) not available. Install and start manually:"
-    warn "  $BIN -install-service"
+    warn "systemd user session (DBus) not available. Install and start manually after writing the unit."
     warn "  systemctl --user daemon-reload"
     warn "  systemctl --user enable --now $SERVICE"
     return 1
   fi
   if [[ "$DRY" -eq 1 ]]; then
-    info "Plan: '$BIN -install-service', then systemctl --user enable --now $SERVICE"
+    info "Plan: write $UNIT_DIR/$SERVICE with ExecStart=$(user_service_exec "$BIN")"
+    info "Plan: import DISPLAY/XAUTHORITY/XDG_SESSION_TYPE into systemd --user"
+    info "Plan: systemctl --user enable --now $SERVICE"
     return 0
   fi
-  "$BIN" -install-service
+  # The user manager can start before GNOME exports its graphical-session
+  # variables. Import them now so xinput can connect to the active X server.
+  local -a graphical_env=()
+  local var
+  for var in DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP; do
+    if [[ -n "${!var:-}" ]]; then graphical_env+=("$var"); fi
+  done
+  if [[ ${#graphical_env[@]} -gt 0 ]]; then
+    systemctl --user import-environment "${graphical_env[@]}" >/dev/null 2>&1 || true
+    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+      dbus-update-activation-environment --systemd "${graphical_env[@]}" >/dev/null 2>&1 || true
+    fi
+  fi
+  write_user_unit
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE" >/dev/null 2>&1 \
     || warn "systemctl --user enable failed."
-  info "Service unit written to $UNIT_DIR/$SERVICE"
-  systemctl --user start "$SERVICE" >/dev/null 2>&1 || true
+  # Restart, rather than start, so an already-running 1.3.x daemon is replaced
+  # with the newly installed binary and updated X11 event parser.
+  systemctl --user restart "$SERVICE" >/dev/null 2>&1 || true
   sleep 1
   case "$(systemctl --user is-active "$SERVICE" 2>/dev/null)" in
     active)
@@ -502,6 +561,13 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus
 Environment=XDG_SESSION_TYPE=wayland
 Environment=WAYLAND_DISPLAY=wayland-0"
   fi
+  # Greeter X11: no --auto-input (xinput path). Greeter Wayland: --auto-input.
+  local greeter_exec
+  if [[ "$GREETER_TYPE" == "x11" ]]; then
+    greeter_exec="$SYS_INSTALL_DIR/$APP"
+  else
+    greeter_exec="$SYS_INSTALL_DIR/$APP --auto-input"
+  fi
   local unit
   unit="[Unit]
 Description=GNOME Keyboard Layout Switcher (login screen / greeter)
@@ -514,7 +580,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=$GREETER_USER
 $envs
-ExecStart=$SYS_INSTALL_DIR/$APP --auto-input
+ExecStart=$greeter_exec
 Restart=on-failure
 RestartSec=3
 
@@ -522,10 +588,10 @@ RestartSec=3
 WantedBy=multi-user.target
 "
   if [[ "$DRY" -eq 1 ]]; then
-    info "Plan: write $SYS_UNIT_DIR/$SERVICE (User=$GREETER_USER, $GREETER_TYPE)"
+    info "Plan: write $SYS_UNIT_DIR/$SERVICE (User=$GREETER_USER, $GREETER_TYPE, ExecStart=$greeter_exec)"
   else
     printf '%s' "$unit" | sudo_run tee "$SYS_UNIT_DIR/$SERVICE" >/dev/null
-    info "Unit written to $SYS_UNIT_DIR/$SERVICE"
+    info "Unit written to $SYS_UNIT_DIR/$SERVICE (ExecStart=$greeter_exec)"
   fi
 
   # 4. enable and try to start
@@ -557,27 +623,127 @@ WantedBy=multi-user.target
 # --- verification ----------------------------------------------------------
 
 EXT_UUID="gnome-layout-switch@gnome-layout-switch"
-EXT_SRC="${ROOT}/extension/${EXT_UUID}"
 EXT_DST="${HOME}/.local/share/gnome-shell/extensions/${EXT_UUID}"
+
+# Detect GNOME Shell major version (e.g. 42, 46, 48).
+# Returns empty string if detection fails.
+detect_gnome_shell_major() {
+  local ver major
+  if command -v gnome-shell >/dev/null 2>&1; then
+    ver="$(gnome-shell --version 2>/dev/null || true)"
+    # "GNOME Shell 46.0" / "GNOME Shell 42.9" / "GNOME Shell 48.beta"
+    major="$(echo "$ver" | sed -nE 's/.*GNOME Shell ([0-9]+).*/\1/p')"
+    if [[ -n "$major" ]]; then
+      echo "$major"
+      return 0
+    fi
+  fi
+  # Fallback: try gsettings / session (less reliable)
+  if command -v gsettings >/dev/null 2>&1; then
+    # Some environments expose version via other means; leave empty on failure
+    :
+  fi
+  return 1
+}
+
+# Choose extension source directory according to GNOME Shell version.
+# GNOME 45+ requires ES modules; 42–44 use legacy imports.
+# Layout expected under $ROOT/extension/:
+#   modern/gnome-layout-switch@gnome-layout-switch/   (45+)
+#   legacy/gnome-layout-switch@gnome-layout-switch/   (42–44)
+#   gnome-layout-switch@gnome-layout-switch/          (fallback / default modern)
+resolve_extension_src() {
+  local major src_modern src_legacy src_default
+  src_modern="${ROOT}/extension/${EXT_UUID}"
+  src_legacy="${ROOT}/extension/legacy/${EXT_UUID}"
+  src_default="${ROOT}/extension/${EXT_UUID}"
+
+  major="$(detect_gnome_shell_major || true)"
+
+  if [[ -n "$major" ]]; then
+    if [[ "$major" -ge 45 ]]; then
+      if [[ -d "$src_modern" ]]; then
+        echo "$src_modern"
+        info "GNOME Shell $major detected → using modern (ESM) extension"
+        return 0
+      fi
+      if [[ -d "$src_default" ]]; then
+        echo "$src_default"
+        info "GNOME Shell $major detected → using default extension sources"
+        return 0
+      fi
+    elif [[ "$major" -ge 42 ]]; then
+      if [[ -d "$src_legacy" ]]; then
+        echo "$src_legacy"
+        info "GNOME Shell $major detected → using legacy (pre-45) extension"
+        return 0
+      fi
+      if [[ -d "$src_default" ]]; then
+        echo "$src_default"
+        warn "GNOME Shell $major detected but no legacy sources — using default (may not load on <45)"
+        return 0
+      fi
+    else
+      warn "GNOME Shell $major is older than 42 — extension may not work"
+      if [[ -d "$src_legacy" ]]; then
+        echo "$src_legacy"
+        return 0
+      fi
+    fi
+  else
+    # Cannot detect version: prefer modern, then default, then legacy
+    if [[ -d "$src_modern" ]]; then
+      echo "$src_modern"
+      warn "Could not detect GNOME Shell version — using modern (45+) extension"
+      return 0
+    fi
+    if [[ -d "$src_default" ]]; then
+      echo "$src_default"
+      warn "Could not detect GNOME Shell version — using default extension sources"
+      return 0
+    fi
+    if [[ -d "$src_legacy" ]]; then
+      echo "$src_legacy"
+      warn "Could not detect GNOME Shell version — using legacy extension"
+      return 0
+    fi
+  fi
+  return 1
+}
 
 install_extension() {
   step "Installing GNOME Shell extension (${EXT_UUID})"
+  local EXT_SRC
+  if ! EXT_SRC="$(resolve_extension_src)"; then
+    warn "Extension sources not found under ${ROOT}/extension/ — skip"
+    return 0
+  fi
   if [[ ! -d "$EXT_SRC" ]]; then
     warn "Extension sources not found at $EXT_SRC — skip"
     return 0
   fi
   if [[ "$DRY" -eq 1 ]]; then
-    info "Plan: install extension to $EXT_DST and enable it"
+    info "Plan: install extension from $EXT_SRC to $EXT_DST and enable it"
     return 0
   fi
   mkdir -p "$(dirname "$EXT_DST")"
-  rm -rf "$EXT_DST"
-  cp -a "$EXT_SRC" "$EXT_DST"
-  info "Extension installed to $EXT_DST"
   if command -v gnome-extensions >/dev/null 2>&1; then
-    # Enable (may require logout/login on Wayland for D-Bus export to appear)
-    gnome-extensions enable "$EXT_UUID" 2>/dev/null || \
-      warn "gnome-extensions enable failed — enable manually after re-login"
+    # Disable before replacing files; GNOME 42 may otherwise keep the old
+    # extension object loaded while its directory is being replaced.
+    gnome-extensions disable "$EXT_UUID" >/dev/null 2>&1 || true
+  fi
+  local stage="${EXT_DST}.new.$$"
+  rm -rf "$stage"
+  cp -a "$EXT_SRC" "$stage"
+  rm -rf "$EXT_DST"
+  mv "$stage" "$EXT_DST"
+  info "Extension installed to $EXT_DST (from $(basename "$(dirname "$EXT_SRC")")/$(basename "$EXT_SRC"))"
+  if command -v gnome-extensions >/dev/null 2>&1; then
+    if gnome-extensions enable "$EXT_UUID" 2>/dev/null; then
+      info "GNOME extension enabled: $EXT_UUID"
+    else
+      warn "gnome-extensions enable failed — inspect: gnome-extensions info $EXT_UUID"
+    fi
   else
     warn "gnome-extensions CLI not found; enable the extension in Extensions app"
   fi
@@ -590,8 +756,11 @@ check_backend() {
        --method org.gnome.Shell.Extensions.GnomeLayoutSwitch.GetCurrent >/dev/null 2>&1; then
     v_pass "extension D-Bus (GnomeLayoutSwitch.GetCurrent) reachable"
   else
-    v_warn "extension D-Bus not reachable yet — enable and re-login on Wayland"
-    v_warn "  gnome-extensions enable ${EXT_UUID}"
+    v_warn "extension D-Bus is not reachable yet"
+    v_warn "  Check: gnome-extensions info ${EXT_UUID}"
+    if [[ "$SESSION" == "wayland" ]]; then
+      v_warn "  If it was just enabled, log out and back in on Wayland"
+    fi
   fi
 }
 
@@ -989,6 +1158,10 @@ if ! detect_session; then
   exit 1
 fi
 info "Detected session: $SESSION"
+if [[ "$SESSION" == "x11" ]] && ! command -v xinput >/dev/null 2>&1; then
+  error "xinput is required for X11 sessions. Install it first: sudo apt install xinput"
+  exit 1
+fi
 
 resolve_binary
 
@@ -1003,16 +1176,14 @@ if [[ "$MODE" == "system" ]]; then
   elif [[ -x "$BIN" ]]; then
     :
   fi
-  install_service || true
   if is_gnome; then
     install_extension || true
+    disable_shortcuts
   fi
   if [[ "$SESSION" == "wayland" ]]; then
     ensure_input_group || true
   fi
-  if is_gnome; then
-    disable_shortcuts
-  fi
+  install_service || true
   write_user_state
   verify_system
   # user-side checks (service enabled in this session)
@@ -1028,16 +1199,16 @@ if [[ "$MODE" == "system" ]]; then
 fi
 
 install_binary
-install_service || true
 if is_gnome; then
+  # Install and enable the extension before starting the daemon: otherwise
+  # the first backend check races extension registration on GNOME 42.
   install_extension || true
+  disable_shortcuts
 fi
 if [[ "$SESSION" == "wayland" ]]; then
   ensure_input_group || true
 fi
-if is_gnome; then
-  disable_shortcuts
-fi
+install_service || true
 write_user_state
 verify
 summary

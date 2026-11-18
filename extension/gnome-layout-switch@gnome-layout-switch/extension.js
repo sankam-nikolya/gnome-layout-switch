@@ -1,6 +1,8 @@
 // GNOME Shell extension that exposes a small, safe D-Bus API for cycling
 // input sources. Used by the gnome-layout-switch daemon.
 //
+// Compatible with GNOME Shell 45+ (ES modules).
+//
 // Methods (org.gnome.Shell.Extensions.GnomeLayoutSwitch):
 //   Next()       -> u   switch to next layout, return new index
 //   Previous()   -> u   switch to previous layout, return new index

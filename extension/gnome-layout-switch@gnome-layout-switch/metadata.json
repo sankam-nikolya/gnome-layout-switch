@@ -1,6 +1,6 @@
 {
   "name": "GNOME Layout Switch",
-  "description": "D-Bus interface for reliable keyboard layout switching (Next / Previous / GetCurrent). Used by gnome-layout-switch daemon. Works on GNOME Wayland and X11, including Ubuntu 26.",
+  "description": "D-Bus interface for reliable keyboard layout switching (Next / Previous / GetCurrent). Used by gnome-layout-switch daemon. Works on GNOME Wayland and X11, including Ubuntu 26. Modern build for GNOME 45+.",
   "uuid": "gnome-layout-switch@gnome-layout-switch",
   "shell-version": [
     "45",

@@ -8,7 +8,7 @@
 
 **gnome-layout-switch** — A lightweight daemon for switching keyboard layout in GNOME using the **Ctrl + Shift** combination.
 
-Supports **X11** and **GNOME Wayland**, including the target Ubuntu 26 (64-bit) configuration. On Wayland, it reads Linux input events from `/dev/input/eventX` (requires `input` group membership). On X11, it uses `xinput test-xi2`.
+Supports **X11** and **GNOME Wayland**, including the target Ubuntu 22.04 / 24.04 / 26.04 (64-bit) configuration. On Wayland, it reads Linux input events from `/dev/input/eventX` (requires `input` group membership). On X11 (including Ubuntu 22.04 / GNOME 42), it uses `xinput test-xi2 --root` and parses the standard multi-line XI2 event format.
 
 **Primary backend (version 1.3+):** Own GNOME Shell Extension (`gnome-layout-switch@gnome-layout-switch`) exporting D-Bus methods `Next()`, `Previous()`, `GetCurrent()`. The Go daemon calls `Next()` via the session bus. The extension is installed and enabled by `install.sh`.
 
@@ -17,14 +17,14 @@ Supports **X11** and **GNOME Wayland**, including the target Ubuntu 26 (64-bit) 
 Single static Go binary, installation via one script (`install.sh`), systemd user or system service (the latter also runs on the GDM login screen).
 
 ```
-gnome-layout-switch 1.3.0 — GNOME keyboard layout switcher (Ctrl+Shift)
+gnome-layout-switch 1.4.1 — GNOME keyboard layout switcher (Ctrl+Shift)
 ```
 
 ## Overview
 
 ### Purpose
 
-This daemon listens for a key combination (default: Ctrl + Shift) and switches the GNOME input source via a bundled GNOME Shell extension. It works on both X11 and Wayland (Ubuntu 26 / GNOME 45–51).
+This daemon listens for a key combination (default: Ctrl + Shift) and switches the GNOME input source via a bundled GNOME Shell extension. It works on both X11 and Wayland (Ubuntu 22.04 / GNOME 42 (X11) and newer GNOME releases).
 
 ### Architecture
 
@@ -72,6 +72,8 @@ The daemon converts X11 defaults to Linux codes automatically when running in di
 
 ## Installation
 
+For Ubuntu 22.04 / GNOME 42 / X11, install the XInput utility first: `sudo apt install xinput`. The installer selects the legacy GNOME Shell extension for GNOME 42 and uses X11 keycodes; no `/dev/input` access or `input` group membership is required.
+
 ### One-Command Installer (Recommended)
 
 ```bash
@@ -81,7 +83,7 @@ The daemon converts X11 defaults to Linux codes automatically when running in di
 The installer detects the session type (X11 or Wayland) and:
 
 1. Installs the binary to `~/.local/bin` (builds via `build.sh` if missing).
-2. Installs and starts the systemd user service.
+2. Installs and enables the matching GNOME Shell extension before starting the systemd user service.
 3. On Wayland: Adds the user to the `input` group (`sudo usermod -aG input $USER`).
 4. On GNOME: Disables the system shortcut for language switching (`switch-input-source` / `switch-input-source-backward`) to avoid conflict with the daemon's Ctrl+Shift trigger. Previous values are backed up to `~/.config/gnome-layout-switch/shortcuts.backup`. Restore with `bash ~/.config/gnome-layout-switch/shortcuts.backup`.
 5. Verifies the daemon runs and reports `PASS`/`WARN`/`FAIL` per check.
