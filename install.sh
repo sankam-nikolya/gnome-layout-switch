@@ -664,27 +664,27 @@ resolve_extension_src() {
     if [[ "$major" -ge 45 ]]; then
       if [[ -d "$src_modern" ]]; then
         echo "$src_modern"
-        info "GNOME Shell $major detected → using modern (ESM) extension"
+        info "GNOME Shell $major detected → using modern (ESM) extension" >&2
         return 0
       fi
       if [[ -d "$src_default" ]]; then
         echo "$src_default"
-        info "GNOME Shell $major detected → using default extension sources"
+        info "GNOME Shell $major detected → using default extension sources" >&2
         return 0
       fi
     elif [[ "$major" -ge 42 ]]; then
       if [[ -d "$src_legacy" ]]; then
         echo "$src_legacy"
-        info "GNOME Shell $major detected → using legacy (pre-45) extension"
+        info "GNOME Shell $major detected → using legacy (pre-45) extension" >&2
         return 0
       fi
       if [[ -d "$src_default" ]]; then
         echo "$src_default"
-        warn "GNOME Shell $major detected but no legacy sources — using default (may not load on <45)"
+        warn "GNOME Shell $major detected but no legacy sources — using default (may not load on <45)" >&2
         return 0
       fi
     else
-      warn "GNOME Shell $major is older than 42 — extension may not work"
+      warn "GNOME Shell $major is older than 42 — extension may not work" >&2
       if [[ -d "$src_legacy" ]]; then
         echo "$src_legacy"
         return 0
@@ -694,17 +694,17 @@ resolve_extension_src() {
     # Cannot detect version: prefer modern, then default, then legacy
     if [[ -d "$src_modern" ]]; then
       echo "$src_modern"
-      warn "Could not detect GNOME Shell version — using modern (45+) extension"
+      warn "Could not detect GNOME Shell version — using modern (45+) extension" >&2
       return 0
     fi
     if [[ -d "$src_default" ]]; then
       echo "$src_default"
-      warn "Could not detect GNOME Shell version — using default extension sources"
+      warn "Could not detect GNOME Shell version — using default extension sources" >&2
       return 0
     fi
     if [[ -d "$src_legacy" ]]; then
       echo "$src_legacy"
-      warn "Could not detect GNOME Shell version — using legacy extension"
+      warn "Could not detect GNOME Shell version — using legacy extension" >&2
       return 0
     fi
   fi
@@ -738,11 +738,40 @@ install_extension() {
   rm -rf "$EXT_DST"
   mv "$stage" "$EXT_DST"
   info "Extension installed to $EXT_DST (from $(basename "$(dirname "$EXT_SRC")")/$(basename "$EXT_SRC"))"
+
+  # --- Enable with verification and retries (fixes GNOME 42 race) ---
   if command -v gnome-extensions >/dev/null 2>&1; then
-    if gnome-extensions enable "$EXT_UUID" 2>/dev/null; then
+    local enabled=0
+    local attempt=0
+    local max_attempts=10
+    # Try gnome-extensions enable first
+    gnome-extensions enable "$EXT_UUID" >/dev/null 2>&1 || true
+    # Poll for ENABLED state
+    while [[ $attempt -lt $max_attempts ]]; do
+      sleep 0.5
+      if gnome-extensions info "$EXT_UUID" 2>/dev/null | grep -q "Стан: ENABLED\|State: ENABLED"; then
+        enabled=1
+        break
+      fi
+      attempt=$((attempt + 1))
+    done
+    if [[ $enabled -eq 1 ]]; then
       info "GNOME extension enabled: $EXT_UUID"
     else
-      warn "gnome-extensions enable failed — inspect: gnome-extensions info $EXT_UUID"
+      warn "gnome-extensions enable did not report ENABLED in time, trying D-Bus fallback..."
+      # Fallback: direct D-Bus call to shell (works if standalone service hasn't claimed the name yet)
+      if gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+           --method org.gnome.Shell.Extensions.EnableExtension "$EXT_UUID" >/dev/null 2>&1; then
+        # Wait briefly for state to propagate
+        sleep 1
+        if gnome-extensions info "$EXT_UUID" 2>/dev/null | grep -q "Стан: ENABLED\|State: ENABLED"; then
+          info "GNOME extension enabled via D-Bus fallback: $EXT_UUID"
+          enabled=1
+        fi
+      fi
+      if [[ $enabled -eq 0 ]]; then
+        warn "gnome-extensions enable failed — inspect: gnome-extensions info $EXT_UUID"
+      fi
     fi
   else
     warn "gnome-extensions CLI not found; enable the extension in Extensions app"
@@ -750,17 +779,23 @@ install_extension() {
 }
 
 check_backend() {
-  if command -v gdbus >/dev/null 2>&1 &&
-     gdbus call --session --dest org.gnome.Shell \
-       --object-path /org/gnome/Shell/Extensions/GnomeLayoutSwitch \
-       --method org.gnome.Shell.Extensions.GnomeLayoutSwitch.GetCurrent >/dev/null 2>&1; then
-    v_pass "extension D-Bus (GnomeLayoutSwitch.GetCurrent) reachable"
-  else
-    v_warn "extension D-Bus is not reachable yet"
-    v_warn "  Check: gnome-extensions info ${EXT_UUID}"
-    if [[ "$SESSION" == "wayland" ]]; then
-      v_warn "  If it was just enabled, log out and back in on Wayland"
+  # Retry D-Bus check a few times (extension D-Bus export may lag behind enable)
+  local attempt=0 max_attempts=6
+  while [[ $attempt -lt $max_attempts ]]; do
+    if command -v gdbus >/dev/null 2>&1 &&
+       gdbus call --session --dest org.gnome.Shell \
+         --object-path /org/gnome/Shell/Extensions/GnomeLayoutSwitch \
+         --method org.gnome.Shell.Extensions.GnomeLayoutSwitch.GetCurrent >/dev/null 2>&1; then
+      v_pass "extension D-Bus (GnomeLayoutSwitch.GetCurrent) reachable"
+      return 0
     fi
+    attempt=$((attempt + 1))
+    [[ $attempt -lt $max_attempts ]] && sleep 0.5
+  done
+  v_warn "extension D-Bus is not reachable yet"
+  v_warn "  Check: gnome-extensions info ${EXT_UUID}"
+  if [[ "$SESSION" == "wayland" ]]; then
+    v_warn "  If it was just enabled, log out and back in on Wayland"
   fi
 }
 
